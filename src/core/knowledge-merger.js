@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const _ = require('lodash');
 const { Logger } = require('./logger');
+const { expandPath } = require('../utils/path-utils');
 
 /**
  * Knowledge Merger for handling conflict resolution and source merging
@@ -70,6 +71,7 @@ class KnowledgeMerger {
 
   /**
    * Process a single knowledge source
+   * Supports tilde (~) and $HOME expansion in source path
    * @param {Object} source - Knowledge source object
    * @param {Object} mergedKnowledge - Accumulated merged knowledge
    * @param {Array} dependencies - Required dependencies
@@ -77,7 +79,9 @@ class KnowledgeMerger {
    */
   async processKnowledgeSource(source, mergedKnowledge, dependencies) {
     try {
-      const sourcePath = path.resolve(source.path);
+      // Expand tilde and $HOME in source path
+      const expandedPath = expandPath(source.path);
+      const sourcePath = path.resolve(expandedPath);
       const exists = await fs.pathExists(sourcePath);
 
       if (!exists) {

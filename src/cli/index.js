@@ -6,6 +6,8 @@ const ora = require('ora');
 const inquirer = require('inquirer');
 const { BmadFederatedKnowledge } = require('../index');
 const { ConfigValidator } = require('../schemas/config-validator');
+const { expandPath } = require('../utils/path-utils');
+const { getFullVersion, getVersionInfo } = require('../utils/version-utils');
 const fs = require('fs-extra');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -19,7 +21,24 @@ const configValidator = new ConfigValidator();
 program
   .name('bmad-fed')
   .description('BMAD Federated Knowledge System CLI')
-  .version('1.0.0');
+  .version(getFullVersion(), '-V, --version', 'output the version number with build date and commit hash');
+
+/**
+ * Version info command - shows detailed version information
+ */
+program
+  .command('version-info')
+  .description('Show detailed version information including build date and commit hash')
+  .action(() => {
+    const info = getVersionInfo();
+    console.log(chalk.blue.bold('\n📦 BMAD Federated Knowledge System Version Info\n'));
+    console.log(`  ${chalk.white.bold('Version:')}      ${chalk.green(info.version)}`);
+    console.log(`  ${chalk.white.bold('Build Date:')}   ${chalk.yellow(info.buildDate)}`);
+    console.log(`  ${chalk.white.bold('Commit Hash:')} ${chalk.cyan(info.commitHash)}`);
+    console.log(`  ${chalk.white.bold('Branch:')}       ${chalk.magenta(info.branch)}`);
+    console.log(`  ${chalk.white.bold('Full Version:')} ${chalk.green(info.fullVersion)}`);
+    console.log();
+  });
 
 /**
  * Initialize command
@@ -27,13 +46,15 @@ program
 program
   .command('init')
   .description('Initialize federated knowledge system')
-  .option('-c, --config <path>', 'Configuration file path', './.bmad-fks-core/fks-core-config.yaml')
+  .option('-c, --config <path>', 'Configuration file path (supports ~ and $HOME)', './.bmad-fks-core/fks-core-config.yaml')
   .option('-f, --force', 'Force initialization even if already exists')
   .action(async (options) => {
     const spinner = ora('Initializing BMAD Federated Knowledge System...').start();
-    
+
     try {
-      const configExists = await fs.pathExists(options.config);
+      // Expand tilde (~) and $HOME in config path
+      const configPath = expandPath(options.config);
+      const configExists = await fs.pathExists(configPath);
       
       if (configExists && !options.force) {
         spinner.stop();
@@ -43,21 +64,21 @@ program
           message: 'Configuration file already exists. Do you want to upgrade it?',
           default: false
         }]);
-        
+
         if (!proceed) {
           console.log(chalk.yellow('Initialization cancelled.'));
           return;
         }
-        
+
         spinner.start('Upgrading existing configuration...');
       }
 
       // Generate example configuration
       const exampleConfig = configValidator.generateExampleConfig();
-      
+
       if (configExists && !options.force) {
         // Merge with existing configuration
-        const existingConfig = await configValidator.loadConfigFile(options.config);
+        const existingConfig = await configValidator.loadConfigFile(configPath);
         const mergedConfig = {
           ...existingConfig,
           bmad_config: {
@@ -67,15 +88,15 @@ program
             federated_settings: exampleConfig.bmad_config.federated_settings
           }
         };
-        await configValidator.saveConfigFile(mergedConfig, options.config);
+        await configValidator.saveConfigFile(mergedConfig, configPath);
       } else {
-        await configValidator.saveConfigFile(exampleConfig, options.config);
+        await configValidator.saveConfigFile(exampleConfig, configPath);
       }
 
       await bmadFed.initialize();
-      
+
       spinner.succeed(chalk.green('BMAD Federated Knowledge System initialized successfully!'));
-      console.log(chalk.blue(`FKS Configuration saved to: ${options.config}`));
+      console.log(chalk.blue(`FKS Configuration saved to: ${configPath}`));
       console.log(chalk.blue('Run "bmad-fed status" to check system status.'));
     } catch (error) {
       spinner.fail(chalk.red('Initialization failed'));
@@ -103,25 +124,14 @@ program
         
         // === 2. Sync database sources ===
         spinner = ora('Syncing all database knowledge sources...').start();
-        
+
         try {
-          // Use the sync-db functionality directly instead of spawning a process
-          const { registerSyncDbCommand } = require('./sync-db-command');
-          
-          // Create a temporary Command instance to capture the sync-db action
-          const tempProgram = new Command();
-          registerSyncDbCommand(tempProgram, bmadFed);
-          
-          // Find the command and execute its action directly
-          const syncDbCommand = tempProgram.commands.find(cmd => cmd.name() === 'sync-db');
-          if (syncDbCommand && syncDbCommand._actionHandler) {
-            // Execute with mock option enabled
-            await syncDbCommand._actionHandler({ all: true, mock: true }, {});
-            spinner.succeed(chalk.green('Database sources sync completed.'));
-          } else {
-            console.log(chalk.yellow('Could not find sync-db command handler, skipping database sync.'));
-            spinner.info(chalk.yellow('Database sources sync skipped.'));
-          }
+          // Use the sync-db functionality directly
+          const { syncDatabaseSources } = require('./sync-db-command');
+
+          // Execute with mock option enabled (sync all database sources as JSON)
+          await syncDatabaseSources(bmadFed, { all: true, mock: true, json: true });
+          spinner.succeed(chalk.green('Database sources sync completed.'));
         } catch (err) {
           console.log(chalk.yellow(`Database sync error: ${err.message}`));
           spinner.warn(chalk.yellow('Database sources sync had errors but continuing.'));
@@ -141,7 +151,7 @@ program
                 const description = config.metadata?.description || 'No description provided';
                 contextEntries.push({
                   name,
-                  file: result.filePath || `./.bmad-fks-cache/${name}.pdf`, // Assuming getWeb returns filePath
+                  file: result.filePath || `./.bmad-fks-cache/${name}.html`, // Default to HTML output
                   description,
                   type: 'web',
                   url: config.url
@@ -167,7 +177,10 @@ program
           console.log(chalk.blue(`\n🔄 Flattening repo "${name}" → ${outputFile}`));
 
           await new Promise((resolve, reject) => {
-            const child = spawn('npx', ['bmad-method', 'flatten', '-i', cachePath, '-o', outputFile], {
+            // Use bmad-method v6 alpha flattener
+            const bmadMethodPath = require.resolve('bmad-method');
+            const flattenerPath = path.join(path.dirname(bmadMethodPath), '..', '..', 'tools', 'flattener', 'main.js');
+            const child = spawn('node', [flattenerPath, '-i', cachePath, '-o', outputFile], {
               shell: true
             });
 
@@ -250,17 +263,17 @@ program
           if (config.type === 'database') {
             const cacheRoot = bmadFed.dependencyResolver.config.bmad_config.federated_settings?.cache_root || './bmad-fks-cache';
             const cachePath = path.join(cacheRoot, 'db-knowledge');
-            // Check if PDF or JSON exists
-            const pdfPath = path.join(cachePath, `${name}.pdf`);
+            // Check if JSON or PDF exists (JSON is now the default)
             const jsonPath = path.join(cachePath, `${name}.json`);
-            
+            const pdfPath = path.join(cachePath, `${name}.pdf`);
+
             let filePath;
-            if (await fs.pathExists(pdfPath)) {
-              filePath = pdfPath;
-            } else if (await fs.pathExists(jsonPath)) {
+            if (await fs.pathExists(jsonPath)) {
               filePath = jsonPath;
+            } else if (await fs.pathExists(pdfPath)) {
+              filePath = pdfPath;
             } else {
-              filePath = `${cachePath}/${name}.pdf`; // Default path even if not yet created
+              filePath = `${cachePath}/${name}.json`; // Default path is now JSON
             }
             
             dbEntries.push({
@@ -307,7 +320,7 @@ program
   .option('-b, --branch <branch>', 'Branch name', 'main')
   .option('-p, --priority <number>', 'Priority (0-999)', '0')
   .option('-s, --sync-policy <policy>', 'Sync policy (daily|weekly|on_demand|manual)', 'weekly')
-  .option('-c, --cache <path>', 'Local cache path')
+  .option('-c, --cache <path>', 'Local cache path (supports ~ and $HOME)')
   .option('--interactive', 'Interactive mode')
   .action(async (name, options) => {
     try {
@@ -332,7 +345,7 @@ program
           {
             type: 'input',
             name: 'local_cache',
-            message: 'Local cache path:',
+            message: 'Local cache path (supports ~ and $HOME):',
             default: options.cache || `./.bmad-fks-cache/${name}`
           },
           {
@@ -359,7 +372,7 @@ program
         repoConfig = {
           repo: answers.repo,
           branch: answers.branch,
-          local_cache: answers.local_cache,
+          local_cache: expandPath(answers.local_cache),
           sync_policy: answers.sync_policy,
           priority: answers.priority
         };
@@ -368,11 +381,12 @@ program
           repoConfig.metadata = { description: answers.description };
         }
       } else {
-        // Command line mode
+        // Command line mode - expand tilde in cache path
+        const cachePath = options.cache ? expandPath(options.cache) : `./.bmad-fks-cache/${name}`;
         repoConfig = {
           repo: options.repo,
           branch: options.branch,
-          local_cache: options.cache || `./.bmad-fks-cache/${name}`,
+          local_cache: cachePath,
           sync_policy: options.syncPolicy,
           priority: parseInt(options.priority)
         };
@@ -429,22 +443,34 @@ program
   });
 program
     .command("sync-web <name>")
-    .description("Sync webpage as PDF into cache")
-    .action(async (name) => {
+    .description("Sync webpage into cache (default: HTML)")
+    .option('--format <format>', 'Output format: html (default), pdf, or json', 'html')
+    .option('--html', 'Save as complete HTML file (default)')
+    .option('--pdf', 'Save as PDF')
+    .option('--json', 'Save as JSON with extracted content')
+    .action(async (name, options) => {
       try {
         await bmadFed.initialize();
 
         if (name) {
-          // Sync specific repository
-          const spinner = ora(`Syncing repository: ${name}`).start();
+          // Determine format from options
+          let format = options.format;
+          if (options.pdf) format = 'pdf';
+          else if (options.json) format = 'json';
+          else if (options.html) format = 'html';
+
+          // Sync specific webpage
+          const spinner = ora(`Syncing webpage: ${name} (format: ${format})`).start();
 
           const result = await bmadFed.dependencyResolver.getWeb(
               name,
-              bmadFed.dependencyResolver.config.bmad_config.knowledge_sources[name]
+              bmadFed.dependencyResolver.config.bmad_config.knowledge_sources[name],
+              { format }
           );
 
           if (result.status === 'success') {
-            spinner.succeed(chalk.green(`Wep page "${name}" synced successfully!`));
+            spinner.succeed(chalk.green(`Webpage "${name}" synced successfully!`));
+            console.log(chalk.blue(`  Saved to: ${result.filePath}`));
           } else {
             spinner.fail(chalk.red(`Failed to sync webpage "${name}"`));
             console.error(chalk.red(result.error || 'Unknown error'));
@@ -651,13 +677,14 @@ program
  */
 program
   .command('validate [config]')
-  .description('Validate configuration file')
-  .action(async (configPath) => {
+  .description('Validate configuration file (supports ~ and $HOME)')
+  .action(async (configPathArg) => {
     try {
-      const path = configPath || './bmad-fks-core/fks-core-config.yaml';
-      const spinner = ora(`Validating configuration: ${path}`).start();
-      
-      const config = await configValidator.validate(path);
+      // Expand tilde (~) and $HOME in config path
+      const configFilePath = expandPath(configPathArg || './bmad-fks-core/fks-core-config.yaml');
+      const spinner = ora(`Validating configuration: ${configFilePath}`).start();
+
+      const config = await configValidator.validate(configFilePath);
       
       spinner.succeed(chalk.green('Configuration is valid!'));
       

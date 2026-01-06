@@ -10,15 +10,23 @@ const { GitManager } = require('./managers/git-manager');
 const { ConfigValidator } = require('./schemas/config-validator');
 const { KnowledgeMerger } = require('./core/knowledge-merger');
 const { Logger } = require('./core/logger');
+const { expandPath } = require('./utils/path-utils');
 const fs = require('fs');
 const path = require('path');
 class BmadFederatedKnowledge {
   constructor(options = {}) {
-    this.options = {
+    // Expand tilde (~) and $HOME in paths
+    const rawOptions = {
       logLevel: 'info',
       cacheDir: './.bmad-fks-cache',
       configPath: './.bmad-fks-core/fks-core-config.yaml',
       ...options
+    };
+
+    this.options = {
+      ...rawOptions,
+      cacheDir: expandPath(rawOptions.cacheDir),
+      configPath: expandPath(rawOptions.configPath)
     };
 
     this.logger = new Logger(this.options.logLevel);

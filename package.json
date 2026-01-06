@@ -42,7 +42,7 @@
     "npm": ">=8.0.0"
   },
   "dependencies": {
-    "bmad-method": ">=4.0.0",
+    "bmad-method": "^6.0.0-alpha.22",
     "chalk": "^4.1.2",
     "commander": "^11.1.0",
     "fs-extra": "^11.1.1",
@@ -75,7 +75,7 @@
     "nodemon": "^3.0.1"
   },
   "peerDependencies": {
-    "bmad-method": ">=4.0.0"
+    "bmad-method": "^6.0.0-alpha.22"
   },
   "lint-staged": {
     "*.js": [
@@ -99,7 +99,7 @@
   "bmad": {
     "extension": true,
     "type": "knowledge-system",
-    "compatibility": ">=4.0.0",
+    "compatibility": "^6.0.0-alpha.22",
     "hooks": {
       "pre-resolve": "src/hooks/pre-resolve.js",
       "post-sync": "src/hooks/post-sync.js"

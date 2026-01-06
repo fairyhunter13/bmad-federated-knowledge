@@ -3,6 +3,7 @@ const ora = require('ora');
 const inquirer = require('inquirer');
 const path = require('path');
 const fs = require('fs-extra');
+const { expandPath } = require('../utils/path-utils');
 
 // Check if pdfkit is installed
 let PDFDocument;
@@ -21,10 +22,10 @@ try {
 function registerSyncDbCommand(program, bmadFed) {
   program
     .command('sync-db [knowledgeSourceName]')
-    .description('Sync data from database knowledge sources and save as PDF in cache')
+    .description('Sync data from database knowledge sources and save as JSON in cache')
     .option('-a, --all', 'Sync all database knowledge sources')
     .option('-f, --force', 'Force sync even if already synced recently')
-    .option('-j, --json', 'Save as JSON instead of PDF')
+    .option('-p, --pdf', 'Save as PDF instead of JSON (requires pdfkit)')
     .option('-m, --mock', 'Use mock data for testing (no actual database connection)')
     .on('--help', () => {
       console.log('');
@@ -109,14 +110,14 @@ function registerSyncDbCommand(program, bmadFed) {
             // Execute query and get data
             const data = await executeQuery(connection, source.query, options.mock);
             
-            // Create cache directory if it doesn't exist
-            const cacheRoot = config.bmad_config.federated_settings?.cache_root || './.bmad-fks-cache';
+            // Create cache directory if it doesn't exist - expand tilde and $HOME
+            const cacheRoot = expandPath(config.bmad_config.federated_settings?.cache_root || './.bmad-fks-cache');
             const cachePath = path.join(cacheRoot, 'db-knowledge');
             await fs.ensureDir(cachePath);
             
             // Check format preference and PDFKit availability
             let outputPath;
-            const useJson = options.json || !PDFDocument;
+            const useJson = !options.pdf || !PDFDocument;
             
             if (!useJson && PDFDocument) {
               // Generate PDF
@@ -139,10 +140,10 @@ function registerSyncDbCommand(program, bmadFed) {
               spinner.succeed(chalk.green(`Database knowledge source "${name}" synced successfully!`));
               console.log(chalk.blue(`  JSON saved to: ${outputPath}`));
               
-              if (!PDFDocument && !options.json) {
-                console.log(chalk.yellow(`  Note: PDFKit module not found.`));
+              if (!PDFDocument && options.pdf) {
+                console.log(chalk.yellow(`  Note: PDFKit module not found - falling back to JSON.`));
                 console.log(chalk.yellow(`  To install PDFKit, run: npm install pdfkit`));
-                console.log(chalk.yellow(`  Or use --json flag to always output in JSON format`));
+                console.log(chalk.yellow(`  PDF output requires the pdfkit module`));
                 
                 const { installPdfKit } = await inquirer.prompt([{
                   type: 'confirm',
@@ -1073,4 +1074,89 @@ async function installPdfKitModule() {
   });
 }
 
-module.exports = { registerSyncDbCommand };
+/**
+ * Sync database knowledge sources directly (for programmatic use)
+ * @param {BmadFederatedKnowledge} bmadFed - BMAD FKS instance
+ * @param {Object} options - Sync options
+ * @param {boolean} options.all - Sync all database sources
+ * @param {boolean} options.mock - Use mock data
+ * @param {boolean} options.pdf - Save as PDF instead of JSON (default: false, JSON is default)
+ * @param {boolean} options.json - Explicit JSON option (for backwards compatibility)
+ * @returns {Promise<void>}
+ */
+async function syncDatabaseSources(bmadFed, options = {}) {
+  await bmadFed.initialize();
+
+  // Get knowledge sources from config
+  const config = bmadFed.dependencyResolver.config;
+  const knowledgeSources = config.bmad_config.knowledge_sources || {};
+  const connections = config.bmad_config.connections || {};
+
+  // Find database knowledge sources
+  const dbSources = Object.entries(knowledgeSources)
+    .filter(([name, source]) => source.type === 'database')
+    .reduce((acc, [name, source]) => {
+      acc[name] = source;
+      return acc;
+    }, {});
+
+  if (Object.keys(dbSources).length === 0) {
+    console.log(chalk.yellow('No database knowledge sources found.'));
+    return;
+  }
+
+  const sourcesToSync = options.all ? Object.entries(dbSources) : [];
+
+  // Process each source
+  for (const [name, source] of sourcesToSync) {
+    try {
+      // Get connection details
+      const connectionRef = source.connection_ref;
+      if (!connections[connectionRef]) {
+        console.log(chalk.red(`Connection "${connectionRef}" not found for source "${name}".`));
+        continue;
+      }
+
+      const connection = connections[connectionRef];
+
+      // Execute query and get data
+      const data = await executeQuery(connection, source.query, options.mock);
+
+      // Create cache directory if it doesn't exist - expand tilde and $HOME
+      const cacheRoot = expandPath(config.bmad_config.federated_settings?.cache_root || './.bmad-fks-cache');
+      const cachePath = path.join(cacheRoot, 'db-knowledge');
+      await fs.ensureDir(cachePath);
+
+      // Default to JSON unless PDF is explicitly requested
+      // JSON is the default output format
+      let outputPath;
+      const useJson = options.pdf !== true || !PDFDocument;
+
+      if (!useJson && PDFDocument) {
+        // Generate PDF (only when explicitly requested with --pdf)
+        outputPath = path.join(cachePath, `${name}.pdf`);
+        await generatePdf(data, outputPath, name, source);
+        console.log(chalk.green(`Database knowledge source "${name}" synced successfully!`));
+        console.log(chalk.blue(`  PDF saved to: ${outputPath}`));
+      } else {
+        // Generate JSON output (default)
+        outputPath = path.join(cachePath, `${name}.json`);
+        await fs.writeJson(outputPath, {
+          metadata: {
+            name,
+            source: source,
+            query: source.query,
+            timestamp: new Date().toISOString()
+          },
+          data
+        }, { spaces: 2 });
+        console.log(chalk.green(`Database knowledge source "${name}" synced successfully!`));
+        console.log(chalk.blue(`  JSON saved to: ${outputPath}`));
+      }
+    } catch (error) {
+      console.error(chalk.red(`Failed to sync database knowledge source "${name}": ${error.message}`));
+    }
+  }
+}
+
+module.exports = { registerSyncDbCommand, syncDatabaseSources };

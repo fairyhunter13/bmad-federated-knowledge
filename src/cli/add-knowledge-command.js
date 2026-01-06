@@ -2,6 +2,7 @@ const chalk = require('chalk');
 const ora = require('ora');
 const inquirer = require('inquirer');
 const { ConfigValidator } = require('../schemas/config-validator');
+const { expandPath } = require('../utils/path-utils');
 
 /**
  * Add knowledge command
@@ -125,18 +126,19 @@ function registerAddKnowledgeCommand(program, bmadFed) {
                   ...(newConnectionAnswers.description && { description: newConnectionAnswers.description })
                 };
                 
-                // Save the updated config
-                await configValidator.saveConfigFile(config, './bmad-fks-core/fks-core-config.yaml');
-                
+                // Save the updated config - use the expanded config path
+                const configPath = expandPath('./.bmad-fks-core/fks-core-config.yaml');
+                await configValidator.saveConfigFile(config, configPath);
+
                 console.log(chalk.green(`Connection "${newConnectionAnswers.connectionName}" added successfully!`));
-                
+
                 // Use the new connection
                 connectionRef = newConnectionAnswers.connectionName;
               }
             } else {
               // No existing connections, create new one
               console.log(chalk.yellow('No existing connections found. Creating a new connection...'));
-              
+
               const newConnectionAnswers = await inquirer.prompt([
                 {
                   type: 'list',
@@ -162,20 +164,21 @@ function registerAddKnowledgeCommand(program, bmadFed) {
                   message: 'Connection description (optional):'
                 }
               ]);
-              
+
               // Save the new connection to the config
               if (!config.bmad_config.connections) {
                 config.bmad_config.connections = {};
               }
-              
+
               config.bmad_config.connections[newConnectionAnswers.connectionName] = {
                 type: newConnectionAnswers.type,
                 connection_string: newConnectionAnswers.connectionString,
                 ...(newConnectionAnswers.description && { description: newConnectionAnswers.description })
               };
-              
-              // Save the updated config
-              await configValidator.saveConfigFile(config, './bmad-fks-core/fks-core-config.yaml');
+
+              // Save the updated config - use the expanded config path
+              const configPath = expandPath('./.bmad-fks-core/fks-core-config.yaml');
+              await configValidator.saveConfigFile(config, configPath);
               
               console.log(chalk.green(`Connection "${newConnectionAnswers.connectionName}" added successfully!`));
               

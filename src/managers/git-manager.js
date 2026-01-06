@@ -2,6 +2,7 @@ const simpleGit = require('simple-git');
 const fs = require('fs-extra');
 const path = require('path');
 const { Logger } = require('../core/logger');
+const { expandPath } = require('../utils/path-utils');
 
 /**
  * Git Manager for handling repository operations in the federated knowledge system
@@ -9,8 +10,10 @@ const { Logger } = require('../core/logger');
  */
 class GitManager {
   constructor(options = {}) {
+    // Expand tilde (~) and $HOME in cacheDir
+    const rawCacheDir = options.cacheDir || './bmad-cache';
     this.options = {
-      cacheDir: './bmad-cache',
+      cacheDir: expandPath(rawCacheDir),
       timeout: 300000, // 5 minutes
       retryAttempts: 3,
       parallelSync: true,
@@ -38,15 +41,18 @@ class GitManager {
 
   /**
    * Sync a repository to local cache
+   * Supports tilde (~) and $HOME expansion in localPath
    * @param {string} repoUrl - Repository URL
-   * @param {string} localPath - Local cache path
+   * @param {string} localPath - Local cache path (supports ~ and $HOME)
    * @param {string} branch - Branch to sync
    * @param {Object} authConfig - Authentication configuration
    * @returns {Promise<Object>} Sync result
    */
   async syncRepo(repoUrl, localPath, branch = 'main', authConfig = null) {
-    const lockKey = `${repoUrl}:${localPath}`;
-    
+    // Expand tilde and $HOME in local path
+    const expandedLocalPath = expandPath(localPath);
+    const lockKey = `${repoUrl}:${expandedLocalPath}`;
+
     try {
       // Check if sync is already in progress
       if (this.lockFiles.has(lockKey)) {
@@ -57,7 +63,7 @@ class GitManager {
       // Set lock
       this.lockFiles.set(lockKey, Date.now());
 
-      const absolutePath = path.resolve(localPath);
+      const absolutePath = path.resolve(expandedLocalPath);
       const exists = await fs.pathExists(absolutePath);
 
       let git;
@@ -77,7 +83,7 @@ class GitManager {
       // Update sync timestamp
       this.syncTimestamps.set(lockKey, Date.now());
 
-      this.logger.info(`Successfully synced repository ${repoUrl} to ${localPath}`);
+      this.logger.info(`Successfully synced repository ${repoUrl} to ${expandedLocalPath}`);
       return {
         status: 'success',
         path: absolutePath,
@@ -91,7 +97,7 @@ class GitManager {
       return {
         status: 'error',
         error: error.message,
-        path: localPath,
+        path: expandedLocalPath,
         timestamp: new Date().toISOString()
       };
     } finally {
@@ -241,12 +247,15 @@ class GitManager {
 
   /**
    * Get repository status
-   * @param {string} localPath - Local repository path
+   * Supports tilde (~) and $HOME expansion in localPath
+   * @param {string} localPath - Local repository path (supports ~ and $HOME)
    * @returns {Promise<Object>} Repository status
    */
   async getRepoStatus(localPath) {
     try {
-      const absolutePath = path.resolve(localPath);
+      // Expand tilde and $HOME in local path
+      const expandedPath = expandPath(localPath);
+      const absolutePath = path.resolve(expandedPath);
       const exists = await fs.pathExists(absolutePath);
 
       if (!exists) {

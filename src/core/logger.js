@@ -1,14 +1,18 @@
 const winston = require('winston');
 const path = require('path');
+const { expandPath } = require('../utils/path-utils');
 
 /**
  * Logger utility for BMAD Federated Knowledge System
  * Provides structured logging with different levels and formats
+ * Supports tilde (~) and $HOME expansion in logDir
  */
 class Logger {
   constructor(level = 'info', options = {}) {
+    // Expand tilde and $HOME in logDir
+    const rawLogDir = options.logDir || './logs';
     this.options = {
-      logDir: './logs',
+      logDir: expandPath(rawLogDir),
       maxFiles: 5,
       maxSize: '20m',
       ...options

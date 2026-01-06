@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { ConfigValidator } = require('../schemas/config-validator');
+const { expandPath } = require('../utils/path-utils');
 
 const puppeteer = require("puppeteer");
 /**
@@ -9,9 +10,13 @@ const puppeteer = require("puppeteer");
  */
 class FederatedDependencyResolver {
   constructor(options = {}) {
+    // Expand tilde (~) and $HOME in paths
+    const rawConfigPath = options.configPath || './.bmad-fks-core/fks-core-config.yaml';
+    const rawCacheDir = options.cacheDir || './bmad-fks-cache';
+
     this.options = {
-      configPath: './.bmad-fks-core/fks-core-config.yaml',
-      cacheDir: './bmad-fks-cache',
+      configPath: expandPath(rawConfigPath),
+      cacheDir: expandPath(rawCacheDir),
       parallelSync: true,
       ...options
     };
@@ -20,7 +25,7 @@ class FederatedDependencyResolver {
     this.knowledgeMerger = options.knowledgeMerger;
     this.logger = options.logger;
     this.configValidator = new ConfigValidator();
-    
+
     this.federatedRepos = new Map();
     this.config = null;
     this.initialized = false;
@@ -329,7 +334,17 @@ class FederatedDependencyResolver {
 
 
 
-  async  getWeb(name, config) {
+  /**
+   * Sync web source - supports html (default), pdf, and json formats
+   * @param {string} name - Knowledge source name
+   * @param {Object} config - Knowledge source configuration
+   * @param {Object} options - Options for web sync
+   * @param {string} options.format - Output format: 'html' (default), 'pdf', or 'json'
+   * @param {boolean} options.pdf - Save as PDF
+   * @param {boolean} options.json - Save as JSON with extracted content
+   * @returns {Promise<Object>} Sync result with status and file path
+   */
+  async getWeb(name, config, options = {}) {
     try {
       // Skip if not needed
       if (!this.shouldSync(name, config)) {
@@ -343,19 +358,77 @@ class FederatedDependencyResolver {
       const page = await browser.newPage();
       await page.goto(config.url, { waitUntil: "networkidle2" });
 
-      const cacheDir = path.resolve("./.bmad-fks-cache");
-      if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir);
+      // Use configured cache directory with tilde expansion
+      const cacheDir = path.resolve(expandPath(this.options.cacheDir || "./.bmad-fks-cache"));
+      if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
 
-      const pdfPath = path.join(cacheDir, `${name}.pdf`);
-      await page.pdf({ path: pdfPath, format: "A4" });
+      // Determine output format: explicit format option > boolean flags > default (html)
+      let format = options.format || 'html';
+      if (!options.format) {
+        if (options.pdf === true) format = 'pdf';
+        else if (options.json === true) format = 'json';
+      }
+
+      let outputPath;
+
+      switch (format) {
+        case 'pdf':
+          // Save as PDF
+          outputPath = path.join(cacheDir, `${name}.pdf`);
+          await page.pdf({ path: outputPath, format: "A4" });
+          console.log(`Webpage ${config.url} saved as PDF to ${outputPath}`);
+          break;
+
+        case 'json':
+          // Save as JSON with extracted content
+          outputPath = path.join(cacheDir, `${name}.json`);
+
+          // Extract page content
+          const pageData = await page.evaluate(() => {
+            return {
+              title: document.title,
+              content: document.body.innerText,
+              html: document.documentElement.outerHTML
+            };
+          });
+
+          const jsonData = {
+            metadata: {
+              name,
+              url: config.url,
+              timestamp: new Date().toISOString(),
+              description: config.metadata?.description || 'Web knowledge source'
+            },
+            data: {
+              title: pageData.title,
+              content: pageData.content,
+              htmlLength: pageData.html.length
+            }
+          };
+
+          await fs.writeJson(outputPath, jsonData, { spaces: 2 });
+          console.log(`Webpage ${config.url} saved as JSON to ${outputPath}`);
+          break;
+
+        case 'html':
+        default:
+          // Save as complete HTML file (default)
+          outputPath = path.join(cacheDir, `${name}.html`);
+
+          // Get complete HTML content
+          const htmlContent = await page.content();
+
+          await fs.writeFile(outputPath, htmlContent, 'utf8');
+          console.log(`Webpage ${config.url} saved as HTML to ${outputPath}`);
+          break;
+      }
 
       await browser.close();
 
       config.lastSync = Date.now();
       config.status = "success";
 
-      console.log(`Webpage ${config.url} saved to ${pdfPath}`);
-      return { status: "success", file: pdfPath };
+      return { status: "success", file: outputPath, filePath: outputPath };
     } catch (err) {
       console.error(`Failed to sync webpage for ${name}:`, err);
       config.status = "error";

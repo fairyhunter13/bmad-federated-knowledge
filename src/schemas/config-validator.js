@@ -2,6 +2,7 @@ const Joi = require('joi');
 const yaml = require('yaml');
 const fs = require('fs-extra');
 const path = require('path');
+const { expandPath, expandPathsInObject } = require('../utils/path-utils');
 
 /**
  * Configuration validator for BMAD Federated Knowledge System
@@ -153,14 +154,20 @@ class ConfigValidator {
 
   /**
    * Load and parse YAML configuration file
-   * @param {string} filePath - Path to configuration file
-   * @returns {Promise<Object>} Parsed configuration
+   * Supports tilde (~) and $HOME expansion in file path and config values
+   * @param {string} filePath - Path to configuration file (supports ~ and $HOME)
+   * @returns {Promise<Object>} Parsed configuration with expanded paths
    */
   async loadConfigFile(filePath) {
     try {
-      const configPath = path.resolve(filePath);
+      // Expand tilde and $HOME in the file path itself
+      const expandedFilePath = expandPath(filePath);
+      const configPath = path.resolve(expandedFilePath);
       const configContent = await fs.readFile(configPath, 'utf8');
-      return yaml.parse(configContent);
+      const config = yaml.parse(configContent);
+
+      // Expand paths within the configuration object
+      return expandPathsInObject(config);
     } catch (error) {
       throw new Error(`Failed to load configuration file ${filePath}: ${error.message}`);
     }
@@ -168,21 +175,24 @@ class ConfigValidator {
 
   /**
    * Save configuration to YAML file
+   * Supports tilde (~) and $HOME expansion in file path
    * @param {Object} config - Configuration object
-   * @param {string} filePath - Output file path
+   * @param {string} filePath - Output file path (supports ~ and $HOME)
    * @returns {Promise<void>}
    */
   async saveConfigFile(config, filePath) {
     try {
-      const configPath = path.resolve(filePath);
+      // Expand tilde and $HOME in the file path
+      const expandedFilePath = expandPath(filePath);
+      const configPath = path.resolve(expandedFilePath);
       await fs.ensureDir(path.dirname(configPath));
-      
+
       const yamlContent = yaml.stringify(config, {
         indent: 2,
         lineWidth: 120,
         minContentWidth: 20
       });
-      
+
       await fs.writeFile(configPath, yamlContent, 'utf8');
     } catch (error) {
       throw new Error(`Failed to save configuration file ${filePath}: ${error.message}`);
